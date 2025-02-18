@@ -1,3 +1,5 @@
+# websocket_client.py
+
 import asyncio
 import websockets
 import json
@@ -6,7 +8,7 @@ AUTH_TOKEN = "your_auth_token"
 VTS_WS_URL = "ws://localhost:8001"
 
 async def websocket_task():
-    global ear_left, ear_right, mar
+    global ear_left, ear_right, mar, ebr_left, ebr_right, lip_sync_value, yaw, pitch, roll
     while True:
         try:
             async with websockets.connect(VTS_WS_URL) as websocket:
@@ -29,7 +31,7 @@ async def websocket_task():
                 print("Authentication Response:", response)
 
                 while True:
-                    if ear_left is not None and ear_right is not None and mar is not None:
+                    if None not in (ear_left, ear_right, mar, ebr_left, ebr_right, lip_sync_value):
                         expression_data = {
                             "apiName": "VTubeStudioPublicAPI",
                             "apiVersion": "1.0",
@@ -39,7 +41,13 @@ async def websocket_task():
                                 "expressions": [
                                     {"id": "EyeLeftX", "value": ear_left},
                                     {"id": "EyeRightX", "value": ear_right},
-                                    {"id": "MouthOpen", "value": mar}
+                                    {"id": "MouthOpen", "value": mar},
+                                    {"id": "BrowLeftY", "value": ebr_left},
+                                    {"id": "BrowRightY", "value": ebr_right},
+                                    {"id": "LipSync", "value": lip_sync_value},
+                                    {"id": "HeadYaw", "value": yaw},
+                                    {"id": "HeadPitch", "value": pitch},
+                                    {"id": "HeadRoll", "value": roll}
                                 ]
                             }
                         }
