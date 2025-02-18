@@ -1,14 +1,17 @@
 # detectors/mouth_detector.py
 
-from utils.calculations import calculate_distance
+from utils.calculations import calculate_distance_coords
 
 def calculate_mar(mouth_landmarks, width, height):
     """
     Calculate Mouth Aspect Ratio (MAR)
+
     :param mouth_landmarks: List of mouth landmarks
+    :param width: Width of the frame
+    :param height: Height of the frame
     :return: Mouth aspect ratio
     """
-    # Convert landmarks to coordinates
+    # Convert landmarks to 2D coordinates
     coords = [(int(point.x * width), int(point.y * height)) for point in mouth_landmarks]
 
     # Calculate distances
@@ -19,6 +22,3 @@ def calculate_mar(mouth_landmarks, width, height):
     mar = vertical / horizontal if horizontal else 0
 
     return mar
-
-def calculate_distance_coords(point1, point2):
-    return ((point1[0] - point2[0]) ** 2 + (point1[1] - point2[1]) ** 2) ** 0.5

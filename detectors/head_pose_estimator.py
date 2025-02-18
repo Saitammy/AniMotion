@@ -3,16 +3,6 @@
 import cv2
 import numpy as np
 
-# 3D model points of facial landmarks
-model_points = np.array([
-    (0.0, 0.0, 0.0),          # Nose tip
-    (0.0, -330.0, -65.0),     # Chin
-    (-225.0, 170.0, -135.0),  # Left eye corner
-    (225.0, 170.0, -135.0),   # Right eye corner
-    (-150.0, -150.0, -125.0), # Left mouth corner
-    (150.0, -150.0, -125.0)   # Right mouth corner
-])
-
 def get_head_pose(image_points, camera_matrix, dist_coeffs):
     """
     Calculate head pose using solvePnP.
@@ -22,6 +12,16 @@ def get_head_pose(image_points, camera_matrix, dist_coeffs):
     :param dist_coeffs: Distortion coefficients (assumed zero here)
     :return: rotation_vector, translation_vector
     """
+    # Define the 3D model points of facial landmarks
+    model_points = np.array([
+        (0.0, 0.0, 0.0),             # Nose tip
+        (0.0, -100.0, -30.0),        # Chin
+        (-70.0, -70.0, -50.0),       # Left eye corner
+        (70.0, -70.0, -50.0),        # Right eye corner
+        (-60.0, 50.0, -50.0),        # Left mouth corner
+        (60.0, 50.0, -50.0)          # Right mouth corner
+    ])
+
     success, rotation_vector, translation_vector = cv2.solvePnP(
         model_points,
         image_points,
@@ -29,4 +29,7 @@ def get_head_pose(image_points, camera_matrix, dist_coeffs):
         dist_coeffs,
         flags=cv2.SOLVEPNP_ITERATIVE
     )
+    if not success:
+        raise ValueError("Could not solve PnP")
+
     return rotation_vector, translation_vector

@@ -1,12 +1,15 @@
 # detectors/lip_sync.py
 
-from utils.calculations import calculate_distance
+from utils.calculations import calculate_distance_coords
 
 def calculate_lip_sync_value(mouth_landmarks, width, height):
     """
     Calculate Lip Sync Value based on mouth openness and shape
+
     :param mouth_landmarks: List of mouth landmarks
-    :return: Lip sync value
+    :param width: Width of the frame
+    :param height: Height of the frame
+    :return: Lip sync value between 0.0 and 1.0
     """
     # Convert landmarks to coordinates
     upper_inner_lip = (int(mouth_landmarks[0].x * width), int(mouth_landmarks[0].y * height))
@@ -25,6 +28,3 @@ def calculate_lip_sync_value(mouth_landmarks, width, height):
     lip_sync_value = min(max(mouth_openness, 0.0), 1.0)
 
     return lip_sync_value
-
-def calculate_distance_coords(point1, point2):
-    return ((point1[0] - point2[0]) ** 2 + (point1[1] - point2[1]) ** 2) ** 0.5

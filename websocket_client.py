@@ -3,16 +3,29 @@
 import asyncio
 import websockets
 import json
+import configparser
+import logging
+from utils.shared_variables import SharedVariables
 
-AUTH_TOKEN = "your_auth_token"
-VTS_WS_URL = "ws://localhost:8001"
+# Load configuration
+config = configparser.ConfigParser()
+config.read('config.ini')
 
-async def websocket_task():
-    global ear_left, ear_right, mar, ebr_left, ebr_right, lip_sync_value, yaw, pitch, roll
+# Retrieve WebSocket configuration
+VTS_WS_URL = config.get('WebSocket', 'VTS_WS_URL', fallback='ws://localhost:8001')
+AUTH_TOKEN = config.get('WebSocket', 'AUTH_TOKEN', fallback='your_auth_token')
+
+# Set up logging
+logger = logging.getLogger(__name__)
+
+async def websocket_task(shared_vars, data_lock):
+    """
+    Asynchronous task to handle WebSocket communication.
+    """
     while True:
         try:
             async with websockets.connect(VTS_WS_URL) as websocket:
-                print("Connected to VTube Studio!")
+                logger.info("Connected to VTube Studio WebSocket.")
 
                 # Authenticate
                 auth_message = {
@@ -28,34 +41,42 @@ async def websocket_task():
                 }
                 await websocket.send(json.dumps(auth_message))
                 response = await websocket.recv()
-                print("Authentication Response:", response)
+                logger.info(f"Authentication Response: {response}")
 
                 while True:
-                    if None not in (ear_left, ear_right, mar, ebr_left, ebr_right, lip_sync_value):
-                        expression_data = {
-                            "apiName": "VTubeStudioPublicAPI",
-                            "apiVersion": "1.0",
-                            "requestID": "ExpressionRequest",
-                            "messageType": "ExpressionActivationRequest",
-                            "data": {
-                                "expressions": [
-                                    {"id": "EyeLeftX", "value": ear_left},
-                                    {"id": "EyeRightX", "value": ear_right},
-                                    {"id": "MouthOpen", "value": mar},
-                                    {"id": "BrowLeftY", "value": ebr_left},
-                                    {"id": "BrowRightY", "value": ebr_right},
-                                    {"id": "LipSync", "value": lip_sync_value},
-                                    {"id": "HeadYaw", "value": yaw},
-                                    {"id": "HeadPitch", "value": pitch},
-                                    {"id": "HeadRoll", "value": roll}
-                                ]
+                    with data_lock:
+                        if None not in (shared_vars.ear_left, shared_vars.ear_right, shared_vars.mar,
+                                        shared_vars.ebr_left, shared_vars.ebr_right, shared_vars.lip_sync_value,
+                                        shared_vars.yaw, shared_vars.pitch, shared_vars.roll):
+                            # Prepare expression data
+                            expression_data = {
+                                "apiName": "VTubeStudioPublicAPI",
+                                "apiVersion": "1.0",
+                                "requestID": "ExpressionRequest",
+                                "messageType": "ExpressionActivationRequest",
+                                "data": {
+                                    "expressions": [
+                                        {"id": "EyeLeftBlink", "value": shared_vars.ear_left},
+                                        {"id": "EyeRightBlink", "value": shared_vars.ear_right},
+                                        {"id": "MouthOpen", "value": shared_vars.mar},
+                                        {"id": "BrowLeftY", "value": shared_vars.ebr_left},
+                                        {"id": "BrowRightY", "value": shared_vars.ebr_right},
+                                        {"id": "LipSync", "value": shared_vars.lip_sync_value},
+                                        {"id": "HeadYaw", "value": shared_vars.yaw},
+                                        {"id": "HeadPitch", "value": shared_vars.pitch},
+                                        {"id": "HeadRoll", "value": shared_vars.roll}
+                                    ]
+                                }
                             }
-                        }
-                        await websocket.send(json.dumps(expression_data))
+                            # Send expression data
+                            await websocket.send(json.dumps(expression_data))
                     await asyncio.sleep(0.05)
         except Exception as e:
-            print(f"WebSocket connection error: {e}, retrying in 3 seconds...")
+            logger.error(f"WebSocket connection error: {e}. Reconnecting in 3 seconds...")
             await asyncio.sleep(3)
 
-def start_websocket():
-    asyncio.run(websocket_task())
+def start_websocket(shared_vars, data_lock):
+    """
+    Starts the asynchronous websocket task.
+    """
+    asyncio.run(websocket_task(shared_vars, data_lock))
