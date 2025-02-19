@@ -1,5 +1,3 @@
-# main.py
-
 import cv2
 import numpy as np
 import mediapipe as mp
@@ -8,13 +6,17 @@ import threading
 import time
 import configparser
 import logging
+import torch
+from torchvision import transforms
+from PIL import Image
 from detectors.eye_detector import calculate_ear
 from detectors.mouth_detector import calculate_mar
 from detectors.eyebrow_detector import calculate_ebr
 from detectors.lip_sync import calculate_lip_sync_value
 from detectors.head_pose_estimator import get_head_pose
 from websocket_client import start_websocket
-from utils.calculations import fps_calculation, calculate_distance_coords
+from utils.calculations import fps_calculation
+from utils.shared_variables import SharedVariables
 
 # Load configuration
 config = configparser.ConfigParser()
@@ -34,173 +36,97 @@ EBR_THRESHOLD = config.getfloat('Thresholds', 'EBR_THRESHOLD', fallback=1.5)
 
 # Initialize MediaPipe Face Mesh
 mp_face_mesh = mp.solutions.face_mesh
-face_mesh = mp_face_mesh.FaceMesh(
-    static_image_mode=False,
-    max_num_faces=1,
-    refine_landmarks=True,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5
-)
+face_mesh = mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=2, refine_landmarks=True,
+                                  min_detection_confidence=0.5, min_tracking_confidence=0.5)
 
 # Start webcam feed
-try:
-    if DROIDCAM_URL == '0':
-        DROIDCAM_URL = 0  # Use default webcam
-    cap = cv2.VideoCapture(DROIDCAM_URL)
-    if not cap.isOpened():
-        raise IOError(f"Cannot open camera '{DROIDCAM_URL}'")
-    logger.info(f"Camera '{DROIDCAM_URL}' opened successfully.")
-except Exception as e:
-    logger.error(f"Error initializing camera: {e}")
+cap = cv2.VideoCapture(DROIDCAM_URL if DROIDCAM_URL != '0' else 0)
+if not cap.isOpened():
+    logger.error(f"Cannot open camera '{DROIDCAM_URL}'")
     exit(1)
 
 # FPS Calculation
 frame_count = 0
 start_time = time.time()
+frame_skip = 2  # Skip every 2nd frame to reduce delay
 
-# Global variables for expression values and threading lock
-from utils.shared_variables import SharedVariables
 data_lock = threading.Lock()
 shared_vars = SharedVariables()
 
-# Start WebSocket connection in a separate thread
+# Start WebSocket thread
 websocket_thread = threading.Thread(target=start_websocket, args=(shared_vars, data_lock), daemon=True)
 websocket_thread.start()
 
+# Rolling history for adaptive thresholds
+ear_history = []
+lip_history = []
+
 def process_frames():
-    """
-    Main function to process video frames, detect facial expressions, and update shared variables.
-    """
     global frame_count, start_time
-    dist_coeffs = np.zeros((4, 1))  # Assuming no lens distortion
+    dist_coeffs = np.zeros((4, 1))
+    
+    while cap.isOpened():
+        eye_blinked = "No"
+        mouth_open = "No"
+        lip_sync_active = "No"
+        
+        ret, frame = cap.read()
+        
+        if frame_count % frame_skip != 0:
+            frame_count += 1
+            continue
 
-    try:
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                logger.warning("Failed to grab frame. Retrying...")
-                continue
+        if not ret:
+            logger.warning("Failed to grab frame. Retrying...")
+            continue
 
-            # Resize frame for performance
-            frame = cv2.resize(frame, (640, 480))
+        frame = cv2.resize(frame, (640, 480))
+        height, width = frame.shape[:2]
+        focal_length = width
+        center = (width / 2, height / 2)
+        camera_matrix = np.array([[focal_length, 0, center[0]], [0, focal_length, center[1]], [0, 0, 1]], dtype="double")
 
-            # Update camera parameters based on frame size
-            height, width = frame.shape[:2]
-            focal_length = width
-            center = (width / 2, height / 2)
-            camera_matrix = np.array([
-                [focal_length, 0, center[0]],
-                [0, focal_length, center[1]],
-                [0, 0, 1]
-            ], dtype="double")
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = face_mesh.process(rgb_frame)
 
-            # Convert the BGR image to RGB before processing
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        if results.multi_face_landmarks:
+            for face_landmarks in results.multi_face_landmarks:
+                ear_left = calculate_ear([face_landmarks.landmark[i] for i in [33, 160, 158, 133, 153, 144]], width, height)
+                ear_right = calculate_ear([face_landmarks.landmark[i] for i in [362, 385, 387, 263, 373, 380]], width, height)
+                mar = calculate_mar([face_landmarks.landmark[i] for i in [61, 291, 13, 14]], width, height)
+                lip_sync_value = calculate_lip_sync_value([face_landmarks.landmark[i] for i in [13, 14, 61, 291]], width, height)
+                
+                # Adaptive EAR threshold
+                avg_ear = (ear_left + ear_right) / 2
+                ear_history.append(avg_ear)
+                if len(ear_history) > 50:
+                    ear_history.pop(0)
+                adaptive_ear_threshold = max(min(ear_history) * 0.85, 0.18)
+                print(f"Adaptive EAR Threshold: {adaptive_ear_threshold}, Current EAR: {avg_ear}")
+                eye_blinked = "Yes" if ear_left < adaptive_ear_threshold and ear_right < adaptive_ear_threshold else "No"
+                
+                # Adaptive Lip Sync detection
+                lip_history.append(lip_sync_value)
+                if len(lip_history) > 30:
+                    lip_history.pop(0)
+                smoothed_lip_sync = sum(lip_history[-10:]) / min(len(lip_history), 10)
+                print(f"Smoothed Lip Sync: {smoothed_lip_sync}, Raw Value: {lip_sync_value}")
+                lip_sync_active = "Yes" if smoothed_lip_sync > 0.12 else "No"
+                
+                mouth_open = "Yes" if mar > MAR_THRESHOLD else "No"
+        
+        frame_count, fps = fps_calculation(frame_count, start_time)
+        cv2.putText(frame, f"Eye Blinked: {eye_blinked}", (10, 250), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(frame, f"Mouth Open: {mouth_open}", (10, 280), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(frame, f"Lip Sync Active: {lip_sync_active}", (10, 310), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(frame, f"FPS: {fps:.2f}", (500, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        cv2.imshow('Facial Tracker', frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
-            # Process frame for facial landmarks
-            results = face_mesh.process(rgb_frame)
-
-            if results.multi_face_landmarks:
-                for face_landmarks in results.multi_face_landmarks:
-                    # Define landmark indices
-                    left_eye_indices = [33, 160, 158, 133, 153, 144]
-                    right_eye_indices = [362, 385, 387, 263, 373, 380]
-                    mouth_indices = [61, 291, 13, 14]
-                    left_eyebrow_indices = [70, 63, 105]
-                    right_eyebrow_indices = [336, 296, 334]
-                    nose_tip_index = 1
-                    lip_sync_indices = [13, 14, 61, 291]
-
-                    # Extract landmarks safely
-                    try:
-                        left_eye_landmarks = [face_landmarks.landmark[i] for i in left_eye_indices]
-                        right_eye_landmarks = [face_landmarks.landmark[i] for i in right_eye_indices]
-                        mouth_landmarks = [face_landmarks.landmark[i] for i in mouth_indices]
-                        left_eyebrow_landmarks = [face_landmarks.landmark[i] for i in left_eyebrow_indices]
-                        right_eyebrow_landmarks = [face_landmarks.landmark[i] for i in right_eyebrow_indices]
-                        nose_tip = face_landmarks.landmark[nose_tip_index]
-                        lip_sync_landmarks = [face_landmarks.landmark[i] for i in lip_sync_indices]
-                    except IndexError as e:
-                        logger.error(f"Landmark index error: {e}")
-                        continue  # Skip this frame
-
-                    # Calculate metrics
-                    ear_left = calculate_ear(left_eye_landmarks, width, height)
-                    ear_right = calculate_ear(right_eye_landmarks, width, height)
-                    mar = calculate_mar(mouth_landmarks, width, height)
-                    ebr_left = calculate_ebr(left_eyebrow_landmarks, left_eye_landmarks, width, height)
-                    ebr_right = calculate_ebr(right_eyebrow_landmarks, right_eye_landmarks, width, height)
-                    lip_sync_value = calculate_lip_sync_value(lip_sync_landmarks, width, height)
-
-                    # Head pose estimation
-                    # 2D image points
-                    try:
-                        image_points = np.array([
-                            (nose_tip.x * width, nose_tip.y * height),  # Nose tip
-                            (face_landmarks.landmark[152].x * width, face_landmarks.landmark[152].y * height),  # Chin
-                            (face_landmarks.landmark[263].x * width, face_landmarks.landmark[263].y * height),  # Right eye corner
-                            (face_landmarks.landmark[33].x * width, face_landmarks.landmark[33].y * height),    # Left eye corner
-                            (face_landmarks.landmark[287].x * width, face_landmarks.landmark[287].y * height),  # Mouth right corner
-                            (face_landmarks.landmark[57].x * width, face_landmarks.landmark[57].y * height)     # Mouth left corner
-                        ], dtype="double")
-
-                        rotation_vector, translation_vector = get_head_pose(image_points, camera_matrix, dist_coeffs)
-                        rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
-                        pose_mat = cv2.hconcat((rotation_matrix, translation_vector))
-                        _, _, _, _, _, _, euler_angles = cv2.decomposeProjectionMatrix(pose_mat)
-                        yaw, pitch, roll = euler_angles.flatten()
-                    except Exception as e:
-                        logger.error(f"Head pose estimation error: {e}")
-                        yaw = pitch = roll = 0.0
-
-                    # Synchronize access to shared data
-                    with data_lock:
-                        shared_vars.ear_left = ear_left
-                        shared_vars.ear_right = ear_right
-                        shared_vars.mar = mar
-                        shared_vars.ebr_left = ebr_left
-                        shared_vars.ebr_right = ebr_right
-                        shared_vars.lip_sync_value = lip_sync_value
-                        shared_vars.yaw = yaw
-                        shared_vars.pitch = pitch
-                        shared_vars.roll = roll
-
-                    # Display expressions and head pose angles
-                    cv2.putText(frame, f"EAR: {ear_left:.2f}, {ear_right:.2f}", (10, 30),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                    cv2.putText(frame, f"MAR: {mar:.2f}", (10, 60),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                    cv2.putText(frame, f"EBR: {ebr_left:.2f}, {ebr_right:.2f}", (10, 90),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                    cv2.putText(frame, f"Lip Sync: {lip_sync_value:.2f}", (10, 120),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                    cv2.putText(frame, f"Yaw: {yaw:.2f}", (10, 150),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                    cv2.putText(frame, f"Pitch: {pitch:.2f}", (10, 180),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                    cv2.putText(frame, f"Roll: {roll:.2f}", (10, 210),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
-            else:
-                logger.debug("No face landmarks detected.")
-
-            # Calculate FPS
-            frame_count, fps = fps_calculation(frame_count, start_time)
-            cv2.putText(frame, f"FPS: {fps:.2f}", (500, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
-            # Display the frame using OpenCV
-            cv2.imshow('Facial Tracker', frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                logger.info("Quit command received. Exiting...")
-                break
-
-    except Exception as e:
-        logger.exception(f"An error occurred during frame processing: {e}")
-    finally:
-        cap.release()
-        cv2.destroyAllWindows()
-        logger.info("Resources released, and program terminated.")
+    cap.release()
+    cv2.destroyAllWindows()
+    logger.info("Program terminated.")
 
 if __name__ == "__main__":
     process_frames()
