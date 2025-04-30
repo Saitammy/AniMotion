@@ -44,12 +44,15 @@ class FrameProcessor:
         self.config = config
         self.shared_vars = shared_vars
         self.data_lock = data_lock
-
+        
         # Retrieve thresholds & other settings from config.
         self.ear_threshold = config.getfloat('Thresholds', 'EAR_THRESHOLD', fallback=0.22)
         self.mar_threshold = config.getfloat('Thresholds', 'MAR_THRESHOLD', fallback=0.5)
         self.emotion_analysis_interval = config.getint('Advanced', 'EMOTION_ANALYSIS_INTERVAL', fallback=15)
         self.run_emotion = config.getboolean('Advanced', 'RUN_EMOTION_ANALYSIS', fallback=True)
+        # New parameter: how many frames to skip for advanced lip sync inference.
+        self.lip_sync_skip = config.getint('Advanced', 'LIP_SYNC_SKIP_FRAMES', fallback=3)
+        self.previous_lip_sync_value = 0.0  # To hold the value from the last processed frame
 
         # Initialize MediaPipe Face Mesh.
         self.mp_face_mesh = mp.solutions.face_mesh
@@ -73,7 +76,7 @@ class FrameProcessor:
         self.start_time = time.time()
 
     def process_landmarks(self, face_landmarks, width, height):
-        # Compute eye aspect ratio for left and right eyes.
+        # Compute eye aspect ratio for both eyes.
         raw_ear_left = calculate_ear(
             [face_landmarks.landmark[i] for i in [33, 160, 158, 133, 153, 144]],
             width, height
@@ -113,15 +116,16 @@ class FrameProcessor:
                 logging.warning("Failed to grab frame. Retrying...")
                 continue
 
+            # Lower resolution (e.g., 640x480) helps improve processing speed.
             frame = cv2.resize(frame, (640, 480))
             height, width = frame.shape[:2]
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = self.face_mesh.process(rgb_frame)
 
-            # Initialize default values.
+            # Default values.
             eye_blinked = False
             mouth_open = False
-            lip_sync_value = 0.0
+            lip_sync_value = self.previous_lip_sync_value  # Use the last computed value by default.
             emotion_text = "None"
 
             if results.multi_face_landmarks:
@@ -131,8 +135,8 @@ class FrameProcessor:
                     eye_blinked = avg_ear < self.ear_threshold
                     mouth_open = mar > self.mar_threshold
 
-                    # Advanced lip sync processing.
-                    if self.use_deep_lip_sync:
+                    # Run advanced lip sync only every N frames.
+                    if self.use_deep_lip_sync and (self.frame_count % self.lip_sync_skip == 0):
                         landmarks_array = np.array([[lm.x * width, lm.y * height] for lm in face_landmarks.landmark])
                         x1, y1 = np.min(landmarks_array, axis=0).astype(int)
                         x2, y2 = np.max(landmarks_array, axis=0).astype(int)
@@ -145,20 +149,23 @@ class FrameProcessor:
                                 sample_rate=self.config.getint('Advanced', 'AUDIO_SAMPLE_RATE', fallback=16000)
                             )
                             lip_sync_value = self.advanced_lip_sync.calculate_lip_sync_value(face_roi, audio_sample)
+                            # Save value for reuse in subsequent frames.
+                            self.previous_lip_sync_value = lip_sync_value
                         except Exception as e:
                             logging.error(f"Advanced lip sync error: {e}")
                             lip_sync_value = 0.0
 
-                    # Perform emotion analysis every few frames.
+                    # Run emotion analysis only at configured intervals.
                     if self.frame_count % self.emotion_analysis_interval == 0:
                         emotion_text = self.analyze_emotion(frame)
 
+                    # Update shared variables.
                     with self.data_lock:
                         self.shared_vars.ear_left = ear_left
                         self.shared_vars.ear_right = ear_right
                         self.shared_vars.mar = mar
                         self.shared_vars.lip_sync_value = lip_sync_value
-                    # Process one face per frame.
+                    # Process only one face per frame.
                     break
 
             self.frame_count, fps = fps_calculation(self.frame_count, self.start_time)
@@ -184,7 +191,7 @@ def main():
                         format='%(asctime)s - %(levelname)s - %(message)s')
     logging.info("Starting Facial Tracker.")
 
-    # Open video capture.
+    # Open the video capture.
     droidcam_url = config.get('Camera', 'DROIDCAM_URL', fallback='0')
     cap = cv2.VideoCapture(droidcam_url if droidcam_url != '0' else 0)
     if not cap.isOpened():
@@ -194,7 +201,7 @@ def main():
     shared_vars = SharedVariables()
     data_lock = threading.Lock()
 
-    # Start WebSocket client if enabled by configuration.
+    # Start the WebSocket client if enabled via configuration.
     enable_ws = config.getboolean('WebSocket', 'ENABLE_WEBSOCKET', fallback=False)
     if enable_ws:
         from websocket_client import start_websocket
