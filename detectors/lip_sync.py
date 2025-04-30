@@ -1,30 +1,44 @@
-# detectors/lip_sync.py
-
+from typing import List, Tuple, Any
 from utils.calculations import calculate_distance_coords
 
-def calculate_lip_sync_value(mouth_landmarks, width, height):
+def calculate_lip_sync_value(lip_landmarks: List[Any], width: int, height: int) -> float:
     """
-    Calculate Lip Sync Value based on mouth openness and shape
+    Calculate the Lip Sync Value using selected lip landmarks.
 
-    :param mouth_landmarks: List of mouth landmarks
-    :param width: Width of the frame
-    :param height: Height of the frame
-    :return: Lip sync value between 0.0 and 1.0
+    This function is designed to measure the intensity of lip movements, which can then be mapped to
+    a lip synchronization parameter for the animated model. It uses at least four lip landmarks:
+      - landmarks[0] and landmarks[1] are assumed to represent the outer horizontal lip corners.
+      - landmarks[2] and landmarks[3] are assumed to represent the inner vertical boundaries of the lips.
+    
+    The lip sync value is computed as the ratio between the vertical distance (inner lip gap)
+    and the horizontal distance (outer lip width). A higher ratio can indicate a more pronounced
+    lip movement, e.g., when speaking.
+
+    :param lip_landmarks: List of at least 4 landmarks; each landmark should have 'x' and 'y' attributes,
+                          with normalized values (0 to 1).
+    :param width: Width of the frame (in pixels).
+    :param height: Height of the frame (in pixels).
+    :return: A float representing the lip sync value.
+    :raises ValueError: If fewer than 4 landmarks are provided.
     """
-    # Convert landmarks to coordinates
-    upper_inner_lip = (int(mouth_landmarks[0].x * width), int(mouth_landmarks[0].y * height))
-    lower_inner_lip = (int(mouth_landmarks[1].x * width), int(mouth_landmarks[1].y * height))
-    left_corner = (int(mouth_landmarks[2].x * width), int(mouth_landmarks[2].y * height))
-    right_corner = (int(mouth_landmarks[3].x * width), int(mouth_landmarks[3].y * height))
+    if len(lip_landmarks) < 4:
+        raise ValueError(f"Expected at least 4 lip landmarks, but got {len(lip_landmarks)}.")
 
-    # Vertical and horizontal distances
-    vertical_distance = calculate_distance_coords(upper_inner_lip, lower_inner_lip)
-    horizontal_distance = calculate_distance_coords(left_corner, right_corner)
+    # Convert normalized coordinates to pixel positions.
+    coords: List[Tuple[int, int]] = [
+        (int(point.x * width), int(point.y * height)) for point in lip_landmarks
+    ]
+    
+    # Calculate the outer horizontal distance between the lip corners (landmarks[0] and landmarks[1]).
+    outer_distance = calculate_distance_coords(coords[0], coords[1])
+    
+    # Calculate the inner vertical distance between the upper and lower lips (landmarks[2] and landmarks[3]).
+    inner_distance = calculate_distance_coords(coords[2], coords[3])
+    
+    # Guard against division by zero.
+    if outer_distance == 0:
+        return 0.0
 
-    # Calculate mouth openness ratio
-    mouth_openness = vertical_distance / horizontal_distance if horizontal_distance else 0
-
-    # Map the value to a range suitable for your application (e.g., 0.0 to 1.0)
-    lip_sync_value = min(max(mouth_openness, 0.0), 1.0)
-
+    # Compute the lip sync value as the ratio of vertical motion to the horizontal lip span.
+    lip_sync_value = inner_distance / outer_distance
     return lip_sync_value
