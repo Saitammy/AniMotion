@@ -14,7 +14,7 @@ __pycache__/
 Thumbs.db
 
 # Model files (if too large or handled separately)
-models/*.pt
+model/Wav2Lip-SD-NOGAN.pt
 
 # Configuration files containing secrets (push a template instead)
 config.ini
