@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, List, Dict
 
 class SharedVariables:
     """
@@ -14,6 +14,8 @@ class SharedVariables:
         yaw (Optional[float]): Head pose yaw angle.
         pitch (Optional[float]): Head pose pitch angle.
         roll (Optional[float]): Head pose roll angle.
+        faces (List[Dict]): List of dictionaries holding per-face metrics (for multi-face tracking).
+        fps (Optional[float]): Frames per second, useful for diagnostics.
     """
     def __init__(self) -> None:
         self.ear_left: Optional[float] = None
@@ -26,9 +28,13 @@ class SharedVariables:
         self.pitch: Optional[float] = None
         self.roll: Optional[float] = None
 
+        # New attributes to support multi-face tracking and a diagnostics dashboard.
+        self.faces: List[Dict] = []
+        self.fps: Optional[float] = None
+
     def reset(self) -> None:
         """
-        Reset all shared variables to their initial state (None).
+        Reset all shared variables to their initial state (None or empty).
         Useful when restarting a session or recovering from a tracking failure.
         """
         self.ear_left = None
@@ -40,3 +46,5 @@ class SharedVariables:
         self.yaw = None
         self.pitch = None
         self.roll = None
+        self.faces = []
+        self.fps = None
